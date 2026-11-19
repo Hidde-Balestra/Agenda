@@ -28,3 +28,49 @@ jobs:
 
       - name: Run tests
         run: flutter test
+
+  baikal:
+    name: Integration (Baïkal ${{ matrix.auth }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        auth: [Digest, Basic]
+    env:
+      BAIKAL_VERSION: "0.13.0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.2"
+          extensions: pdo_sqlite, dom, xml, mbstring
+
+      - name: Start Baïkal
+        run: |
+          curl -fsSL -o baikal.zip "https://github.com/sabre-io/Baikal/releases/download/${BAIKAL_VERSION}/baikal-${BAIKAL_VERSION}.zip"
+          unzip -q baikal.zip -d "$RUNNER_TEMP"
+          php tool/baikal/setup.php "$RUNNER_TEMP/baikal" "${{ matrix.auth }}"
+          php -S 127.0.0.1:8765 -t "$RUNNER_TEMP/baikal/html" > "$RUNNER_TEMP/baikal.log" 2>&1 &
+          for i in $(seq 1 20); do
+            curl -s -o /dev/null -X PROPFIND http://127.0.0.1:8765/dav.php/ && break
+            sleep 0.5
+          done
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.41.6
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Run integration tests
+        env:
+          BAIKAL_URL: http://127.0.0.1:8765
+        run: flutter test test/integration
+
+      - name: Baïkal log
+        if: failure()
+        run: cat "$RUNNER_TEMP/baikal.log"

@@ -1,0 +1,3 @@
+tags:
+  integration:
+    # Needs a running Baïkal server; see test/integration/baikal_test.dart.

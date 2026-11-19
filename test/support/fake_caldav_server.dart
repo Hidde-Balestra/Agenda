@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:crypto/crypto.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
@@ -10,11 +11,27 @@ import 'package:http/testing.dart';
 /// * `/calendars/alice/personal/`  – VEVENT calendar (writable)
 /// * `/calendars/alice/holidays/`  – VEVENT calendar (read-only)
 /// * `/calendars/alice/tasks/`     – VTODO-only list (must be ignored)
+enum FakeAuthMode { basic, digest }
+
 class FakeCalDavServer {
-  FakeCalDavServer({this.username = 'alice', this.password = 'secret', this.useWellKnown = false});
+  FakeCalDavServer({
+    this.username = 'alice',
+    this.password = 'secret',
+    this.useWellKnown = false,
+    this.authMode = FakeAuthMode.basic,
+    this.davRoot = '/',
+  });
 
   final String username;
   final String password;
+  final FakeAuthMode authMode;
+  final String realm = 'BaikalDAV';
+
+  /// Current Digest nonce; change it to simulate nonce expiry.
+  String nonce = 'nonce-1';
+
+  /// Path that answers `current-user-principal`, e.g. `/dav.php/` like Baïkal.
+  final String davRoot;
 
   /// When true the root does not answer PROPFIND; only `/.well-known/caldav` redirects.
   final bool useWellKnown;
@@ -39,11 +56,41 @@ class FakeCalDavServer {
     ctags[calendarPath] = ctags[calendarPath]! + 1;
   }
 
+  String _md5(String s) => md5.convert(utf8.encode(s)).toString();
+
+  /// Independent server-side Digest check (RFC 2617, MD5, qop=auth).
+  bool _digestValid(String header, String method) {
+    final p = {
+      for (final m in RegExp(r'(\w+)=(?:"([^"]*)"|([^,\s]+))').allMatches(header.substring(7)))
+        m[1]!: m[2] ?? m[3]!,
+    };
+    if (p['username'] != username || p['nonce'] != nonce || p['realm'] != realm) return false;
+    final ha1 = _md5('$username:$realm:$password');
+    final ha2 = _md5('$method:${p['uri']}');
+    return p['response'] == _md5('$ha1:$nonce:${p['nc']}:${p['cnonce']}:${p['qop']}:$ha2');
+  }
+
+  http.Response _challenge({bool stale = false}) => http.Response('', 401, headers: {
+        'www-authenticate': authMode == FakeAuthMode.digest
+            ? 'Digest realm="$realm",qop="auth",nonce="$nonce",opaque="abc"${stale ? ',stale=TRUE' : ''}'
+            : 'Basic realm="$realm", charset="UTF-8"',
+      });
+
+  bool _authorized(http.Request request) {
+    final header = request.headers['Authorization'] ?? '';
+    if (authMode == FakeAuthMode.basic) {
+      return header == 'Basic ${base64Encode(utf8.encode('$username:$password'))}';
+    }
+    return header.startsWith('Digest ') && _digestValid(header, request.method);
+  }
+
   Future<http.Response> _handle(http.Request request) async {
     requests.add(request);
-    final expected = 'Basic ${base64Encode(utf8.encode('$username:$password'))}';
-    if (request.headers['Authorization'] != expected) {
-      return http.Response('', 401);
+    if (!_authorized(request)) {
+      final header = request.headers['Authorization'] ?? '';
+      // A Digest answer for an old nonce is "stale", not wrong.
+      final stale = header.startsWith('Digest ') && !header.contains('nonce="$nonce"');
+      return _challenge(stale: stale);
     }
     final path = request.url.path;
     switch (request.method) {
@@ -74,10 +121,12 @@ class FakeCalDavServer {
       '<d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>';
 
   http.Response _propfind(String path, String body) {
-    if (path == '/.well-known/caldav') {
+    if (path == '/.well-known/caldav' && useWellKnown) {
       return http.Response('', 301, headers: {'location': '/dav/'});
     }
-    if ((path == '/' && !useWellKnown) || path == '/dav/') {
+    // Like Baïkal behind a plain web server: the root serves an HTML page.
+    if (path == '/' && davRoot != '/') return http.Response('<html>Baïkal</html>', 200);
+    if ((path == davRoot && !useWellKnown) || (path == '/dav/' && useWellKnown)) {
       return _multistatus(_ok(path, '<d:current-user-principal><d:href>/principals/alice/</d:href>'
           '</d:current-user-principal>'));
     }

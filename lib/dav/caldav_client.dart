@@ -4,6 +4,7 @@ import 'package:http/http.dart' as http;
 import 'package:xml/xml.dart';
 
 import '../ical/ical.dart';
+import 'http_auth.dart';
 
 const davNs = 'DAV:';
 const calDavNs = 'urn:ietf:params:xml:ns:caldav';
@@ -54,7 +55,8 @@ class _DavResponse {
   XmlElement? prop(String ns, String name) => props['{$ns}$name'];
 }
 
-/// Minimal CalDAV (RFC 4791) client using HTTP Basic authentication.
+/// Minimal CalDAV (RFC 4791) client supporting HTTP Basic and Digest
+/// authentication (Baïkal uses Digest by default).
 class CalDavClient {
   CalDavClient({
     required this.baseUri,
@@ -63,16 +65,32 @@ class CalDavClient {
     http.Client? httpClient,
   }) : _http = httpClient ?? http.Client();
 
+  /// Paths tried when neither the given URL nor `/.well-known/caldav` leads to
+  /// a principal (common Baïkal, Nextcloud and Radicale layouts).
+  static const fallbackPaths = ['/dav.php/', '/baikal/html/dav.php/', '/baikal/dav.php/', '/remote.php/dav/'];
+
   final Uri baseUri;
   final String username;
   final String password;
   final http.Client _http;
 
+  /// Set once the server sent a Digest challenge; reused for later requests.
+  DigestAuth? _digest;
+
+  /// Whether the server rejected (or never asked for) Basic auth.
+  bool _basicRejected = false;
+
   void close() => _http.close();
 
-  Map<String, String> get _authHeaders => {
-        'Authorization': 'Basic ${base64Encode(utf8.encode('$username:$password'))}',
-      };
+  String? _authorization(String method, Uri uri) {
+    if (_digest != null) return _digest!.authorize(method, uri);
+    // Only send Basic credentials unasked over TLS; over plain HTTP wait for
+    // the challenge so Digest servers never see the password.
+    if (_basicRejected || uri.scheme != 'https') return null;
+    return _basic;
+  }
+
+  String get _basic => 'Basic ${base64Encode(utf8.encode('$username:$password'))}';
 
   Future<http.Response> _send(
     String method,
@@ -81,11 +99,15 @@ class CalDavClient {
     String? body,
   }) async {
     var current = uri;
-    for (var redirects = 0; redirects < 5; redirects++) {
+    var authRetries = 0;
+    String? sentAuth;
+    for (var attempt = 0; attempt < 8; attempt++) {
+      final auth = sentAuth ?? _authorization(method, current);
+      sentAuth = null;
       final request = http.Request(method, current)
         ..followRedirects = false
-        ..headers.addAll(_authHeaders)
         ..headers.addAll(headers);
+      if (auth != null) request.headers['Authorization'] = auth;
       if (body != null) request.bodyBytes = utf8.encode(body);
       http.Response response;
       try {
@@ -99,11 +121,35 @@ class CalDavClient {
         continue;
       }
       if (response.statusCode == 401) {
-        throw DavException('Onjuiste gebruikersnaam of wachtwoord', statusCode: 401);
+        final next = authRetries++ < 2 ? _answerChallenge(response, auth, method, current) : null;
+        if (next == null) {
+          throw DavException('Onjuiste gebruikersnaam of wachtwoord', statusCode: 401);
+        }
+        sentAuth = next;
+        continue;
       }
       return response;
     }
     throw DavException('Te veel redirects');
+  }
+
+  /// Picks credentials for a 401 response, or null if retrying is pointless.
+  String? _answerChallenge(http.Response response, String? sent, String method, Uri uri) {
+    final challenges = parseAuthChallenges(response.headers['www-authenticate'] ?? '');
+    final digest = challenges.where(DigestAuth.supports).firstOrNull;
+    if (digest != null) {
+      final stale = digest.params['stale']?.toLowerCase() == 'true';
+      final sentDigest = sent != null && sent.startsWith('Digest ');
+      // A rejected Digest answer that is not merely a stale nonce means wrong credentials.
+      if (sentDigest && !stale) return null;
+      _digest = DigestAuth(username, password, digest);
+      _basicRejected = true;
+      return _digest!.authorize(method, uri);
+    }
+    final basic = challenges.any((c) => c.scheme == 'basic');
+    if ((basic || challenges.isEmpty) && sent == null) return _basic;
+    if (sent != null && sent.startsWith('Basic ')) _basicRejected = true;
+    return null;
   }
 
   String _decode(http.Response r) => utf8.decode(r.bodyBytes, allowMalformed: true);
@@ -166,10 +212,27 @@ class CalDavClient {
     return null;
   }
 
+  /// URLs probed for `current-user-principal`, in order: the URL as entered,
+  /// `/.well-known/caldav` (RFC 6764), then common server layouts.
+  List<Uri> _discoveryCandidates() {
+    final dir = baseUri.path.endsWith('/') ? baseUri : baseUri.replace(path: '${baseUri.path}/');
+    final candidates = <Uri>[
+      baseUri,
+      baseUri.resolve('/.well-known/caldav'),
+      if (dir.path != '/') ...[dir.resolve('dav.php/'), dir.resolve('html/dav.php/')],
+      for (final p in fallbackPaths) baseUri.resolve(p),
+    ];
+    final seen = <String>{};
+    return [for (final c in candidates) if (seen.add(c.toString())) c];
+  }
+
   /// Finds the calendar home collection via the principal (RFC 6764 / RFC 4791).
   Future<Uri> discoverCalendarHome() async {
-    final principal = await _currentUserPrincipal(baseUri) ??
-        await _currentUserPrincipal(baseUri.resolve('/.well-known/caldav'));
+    Uri? principal;
+    for (final candidate in _discoveryCandidates()) {
+      principal = await _currentUserPrincipal(candidate);
+      if (principal != null) break;
+    }
     if (principal == null) {
       // The URL may already point at a calendar home or collection.
       return baseUri;
@@ -194,7 +257,17 @@ class CalDavClient {
         '<d:prop><d:resourcetype/><d:displayname/><a:calendar-color/><cs:getctag/>'
         '<c:supported-calendar-component-set/><d:current-user-privilege-set/></d:prop>'
         '</d:propfind>';
-    final responses = await _multistatus('PROPFIND', home, body, depth: 1);
+    List<_DavResponse> responses;
+    try {
+      responses = await _multistatus('PROPFIND', home, body, depth: 1);
+    } on DavException catch (e) {
+      if (e.isAuthError || e.statusCode == null) rethrow;
+      throw DavException(
+        'Geen CalDAV-server gevonden op dit adres. Probeer het volledige pad, '
+        'bijv. https://server/dav.php (Baïkal) of https://server/remote.php/dav (Nextcloud).',
+        statusCode: e.statusCode,
+      );
+    }
     final calendars = <DavCalendar>[];
     final seen = <String>{};
     for (final r in responses) {

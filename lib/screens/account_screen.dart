@@ -70,12 +70,26 @@ class _AccountScreenState extends State<AccountScreen> {
                 autocorrect: false,
                 decoration: const InputDecoration(
                   labelText: 'Server-URL',
-                  hintText: 'https://cloud.voorbeeld.nl/remote.php/dav',
+                  hintText: 'https://baikal.voorbeeld.nl/dav.php',
                   helperText: 'Een hostnaam is vaak genoeg; de agenda\'s worden automatisch gevonden.',
                   helperMaxLines: 2,
                 ),
                 validator: required,
+                onChanged: (_) => setState(() {}),
               ),
+              if (_url.text.trim().toLowerCase().startsWith('http://')) ...[
+                const SizedBox(height: 8),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(Icons.warning_amber, size: 18, color: Theme.of(context).colorScheme.error),
+                    const SizedBox(width: 8),
+                    const Expanded(
+                      child: Text('Onversleutelde verbinding: gebruik http:// alleen op je eigen netwerk.'),
+                    ),
+                  ],
+                ),
+              ],
               const SizedBox(height: 12),
               TextFormField(
                 controller: _username,
