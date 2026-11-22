@@ -10,6 +10,9 @@ import 'account_screen.dart';
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
 
+  static String _accountName(AgendaController agenda, String? accountId) =>
+      agenda.accounts.where((a) => a.id == accountId).firstOrNull?.name ?? '';
+
   Future<void> _confirmRemove(BuildContext context, DavAccount account) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -65,6 +68,41 @@ class SettingsScreen extends StatelessWidget {
               ],
               selected: {settings.themeMode},
               onSelectionChanged: (s) => settings.setThemeMode(s.first),
+            ),
+          ),
+          header('Nieuwe afspraken'),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: DropdownButtonFormField<String>(
+              // Rebuild when the effective default changes (e.g. account removed).
+              key: ValueKey('default-${agenda.defaultCalendar.id}'),
+              initialValue: agenda.defaultCalendar.id,
+              isExpanded: true,
+              decoration: const InputDecoration(
+                labelText: 'Standaardagenda',
+                helperText: 'Wordt automatisch gekozen bij een nieuwe afspraak',
+              ),
+              items: [
+                for (final c in agenda.writableCalendars)
+                  DropdownMenuItem(
+                    value: c.id,
+                    child: Row(
+                      children: [
+                        Icon(Icons.circle, size: 14, color: Color(c.colorValue)),
+                        const SizedBox(width: 8),
+                        Flexible(
+                          child: Text(
+                            c.isLocal ? c.name : '${c.name} · ${_accountName(agenda, c.accountId)}',
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+              onChanged: (id) {
+                if (id != null) agenda.setDefaultCalendar(id);
+              },
             ),
           ),
           header('Op dit apparaat'),

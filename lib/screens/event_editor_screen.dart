@@ -62,11 +62,11 @@ class _EventEditorScreenState extends State<EventEditorScreen> {
     } else {
       final now = DateTime.now();
       final d = widget.initialDay;
-      _start = DateTime(d.year, d.month, d.day, now.hour + 1);
+      // Next full hour, but never past 23:00 so the event stays on the chosen day.
+      _start = DateTime(d.year, d.month, d.day, now.hour < 23 ? now.hour + 1 : 23);
       _end = _start.add(const Duration(hours: 1));
       _allDay = false;
-      final writable = agenda.writableCalendars;
-      _calendarId = writable.isEmpty ? localCalendarId : writable.first.id;
+      _calendarId = agenda.defaultCalendar.id;
       _repeat = RepeatFrequency.none;
       _hasCustomRule = false;
     }

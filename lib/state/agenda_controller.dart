@@ -55,6 +55,7 @@ class AgendaController extends ChangeNotifier {
   static const _accountsKey = 'agenda.accounts';
   static const _calendarsKey = 'agenda.calendars';
   static const _eventsKey = 'agenda.events';
+  static const _defaultCalendarKey = 'agenda.defaultCalendar';
   static const _uuid = Uuid();
 
   final KeyValueStore _store;
@@ -70,11 +71,21 @@ class AgendaController extends ChangeNotifier {
   bool _syncing = false;
   String? _lastError;
   DateTime? _lastSync;
+  String? _defaultCalendarId;
 
   List<DavAccount> get accounts => List.unmodifiable(_accounts);
   List<CalendarInfo> get calendars => List.unmodifiable(_calendars);
   List<CalendarEvent> get events => List.unmodifiable(_events);
   List<CalendarInfo> get writableCalendars => _calendars.where((c) => !c.readOnly).toList();
+
+  /// Calendar preselected for new events: the user's choice if it still
+  /// exists and is writable, otherwise the first writable calendar.
+  CalendarInfo get defaultCalendar {
+    final writable = writableCalendars;
+    return writable.where((c) => c.id == _defaultCalendarId).firstOrNull ??
+        writable.firstOrNull ??
+        calendarById(localCalendarId)!;
+  }
   bool get syncing => _syncing;
   String? get lastError => _lastError;
   DateTime? get lastSync => _lastSync;
@@ -98,6 +109,7 @@ class AgendaController extends ChangeNotifier {
     _accounts = decode(await _store.read(_accountsKey), DavAccount.fromJson);
     _calendars = decode(await _store.read(_calendarsKey), CalendarInfo.fromJson);
     _events = decode(await _store.read(_eventsKey), CalendarEvent.fromJson);
+    _defaultCalendarId = await _store.read(_defaultCalendarKey);
 
     if (calendarById(localCalendarId) == null) {
       _calendars.insert(
@@ -233,6 +245,15 @@ class AgendaController extends ChangeNotifier {
     }
     await _persistEvents();
     _invalidate();
+  }
+
+  Future<void> setDefaultCalendar(String calendarId) async {
+    final calendar = calendarById(calendarId);
+    if (calendar == null) throw StateError('Onbekende agenda $calendarId');
+    if (calendar.readOnly) throw StateError('Alleen-lezen-agenda kan geen standaard zijn');
+    _defaultCalendarId = calendarId;
+    notifyListeners();
+    await _store.write(_defaultCalendarKey, calendarId);
   }
 
   Future<void> setCalendarVisible(String calendarId, bool visible) async {

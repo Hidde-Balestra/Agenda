@@ -99,6 +99,47 @@ void main() {
     });
   });
 
+  group('default calendar', () {
+    test('falls back to the local calendar when nothing is chosen', () async {
+      final c = newController();
+      await c.load();
+      expect(c.defaultCalendar.id, localCalendarId);
+    });
+
+    test('is persisted and survives a reload', () async {
+      final c = newController();
+      await c.load();
+      await c.addAccount(name: 'W', serverUrl: 'dav.example.com', username: 'alice', password: 'secret');
+      final personal = c.calendars.firstWhere((x) => x.name == 'Persoonlijk');
+      await c.setDefaultCalendar(personal.id);
+      expect(c.defaultCalendar.id, personal.id);
+
+      final reloaded = newController();
+      await reloaded.load();
+      expect(reloaded.defaultCalendar.id, personal.id);
+    });
+
+    test('read-only calendars cannot be the default', () async {
+      final c = newController();
+      await c.load();
+      await c.addAccount(name: 'W', serverUrl: 'dav.example.com', username: 'alice', password: 'secret');
+      final holidays = c.calendars.firstWhere((x) => x.readOnly);
+      expect(() => c.setDefaultCalendar(holidays.id), throwsStateError);
+      expect(() => c.setDefaultCalendar('bestaat-niet'), throwsStateError);
+      expect(c.defaultCalendar.id, localCalendarId);
+    });
+
+    test('falls back when the chosen calendar disappears', () async {
+      final c = newController();
+      await c.load();
+      final account =
+          await c.addAccount(name: 'W', serverUrl: 'dav.example.com', username: 'alice', password: 'secret');
+      await c.setDefaultCalendar(c.calendars.firstWhere((x) => x.name == 'Persoonlijk').id);
+      await c.removeAccount(account.id);
+      expect(c.defaultCalendar.id, localCalendarId);
+    });
+  });
+
   group('CalDAV accounts', () {
     test('adding an account discovers calendars and syncs events', () async {
       server.addEvent('/calendars/alice/personal/', 'a.ics', sampleEvent());

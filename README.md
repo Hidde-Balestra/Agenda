@@ -10,6 +10,7 @@ Flutter-agenda-app met CalDAV-synchronisatie en ondersteuning voor licht/donker 
 - **CalDAV**: automatische discovery (`current-user-principal` → `calendar-home-set`, met fallback op `/.well-known/caldav`), meerdere accounts, alleen-lezen-agenda's, serverkleuren, ctag-gebaseerde sync en ETag-controle bij opslaan
 - Bij bewerken blijven onbekende gegevens (alarmen, deelnemers, tijdzones, uitzonderingen) behouden
 - Lokale agenda "Mijn agenda" die zonder account werkt
+- Instelbare standaardagenda voor nieuwe afspraken
 - Thema: systeem / licht / donker (wordt onthouden)
 - Wachtwoorden staan in de veilige opslag van het platform (Keychain/Keystore)
 

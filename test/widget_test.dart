@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:agenda/app.dart';
 import 'package:agenda/data/stores.dart';
 import 'package:agenda/models/models.dart';
@@ -117,6 +119,43 @@ void main() {
 
     expect(find.text('Weg ermee'), findsNothing);
     expect(agenda.events, isEmpty);
+  });
+
+  testWidgets('chosen default calendar is preselected for new events', (tester) async {
+    store.values['agenda.accounts'] = jsonEncode([
+      const DavAccount(id: 'acc', name: 'Kantoor', serverUrl: 'https://dav.example.com', username: 'a').toJson(),
+    ]);
+    store.values['agenda.calendars'] = jsonEncode([
+      const CalendarInfo(id: localCalendarId, name: 'Mijn agenda', colorValue: 0xFF3F51B5).toJson(),
+      const CalendarInfo(id: 'werk', name: 'Werk', colorValue: 0xFF009688, accountId: 'acc', href: 'https://x/werk/')
+          .toJson(),
+      const CalendarInfo(
+              id: 'fd', name: 'Feestdagen', colorValue: 0xFFE91E63, accountId: 'acc', href: 'https://x/fd/', readOnly: true)
+          .toJson(),
+    ]);
+    await agenda.load();
+    await pumpApp(tester);
+
+    await tester.tap(find.byTooltip('Instellingen'));
+    await tester.pumpAndSettle();
+    expect(find.text('Standaardagenda'), findsOneWidget);
+
+    await tester.tap(find.text('Mijn agenda').first);
+    await tester.pumpAndSettle();
+    // Read-only calendars are not offered as default.
+    expect(find.text('Feestdagen · Kantoor'), findsNothing);
+    await tester.tap(find.text('Werk · Kantoor').last);
+    await tester.pumpAndSettle();
+    expect(agenda.defaultCalendar.id, 'werk');
+    expect(store.values['agenda.defaultCalendar'], 'werk');
+
+    await tester.tap(find.byType(BackButton));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Nieuwe afspraak'));
+    await tester.pumpAndSettle();
+
+    final field = find.byWidgetPredicate((w) => w is DropdownButtonFormField<String>);
+    expect(find.descendant(of: field, matching: find.text('Werk')), findsOneWidget);
   });
 
   testWidgets('account screen validates required fields', (tester) async {
